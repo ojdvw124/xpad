@@ -1,10 +1,11 @@
 // Bump CACHE when any file changes so the iPad picks up the new version.
-const CACHE = 'xpad-v1';
+const CACHE = 'xpad-v2';
 const ASSETS = [
   './',
   'index.html',
   'style.css',
   'app.js',
+  'onset-worklet.js',
   'manifest.webmanifest',
   'samples/kick.wav',
   'samples/snare.wav',

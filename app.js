@@ -28,6 +28,7 @@ const state = {
   bpm: 128,
   volume: 0.875,             // 0.875 = 0 dB
   quantize: true,
+  autoOffset: 0,             // AUTO BPM phase calibration, set with NUDGE
   pads: PADS.map(() => ({ pitch: 0, decay: 1 })),
 };
 loadState();
@@ -39,6 +40,7 @@ function loadState() {
     if (typeof s.bpm === 'number') state.bpm = clamp(s.bpm, BPM_MIN, BPM_MAX);
     if (typeof s.volume === 'number') state.volume = clamp(s.volume, 0, 1);
     if (typeof s.quantize === 'boolean') state.quantize = s.quantize;
+    if (typeof s.autoOffset === 'number') state.autoOffset = clamp(s.autoOffset, -0.3, 0.3);
     if (Array.isArray(s.pads)) s.pads.forEach((p, i) => {
       if (!state.pads[i] || !p) return;
       if (typeof p.pitch === 'number') state.pads[i].pitch = clamp(p.pitch, -12, 12);
@@ -104,6 +106,7 @@ const lastVoice = PADS.map(() => null);
 const pending = PADS.map(() => []);   // voices not yet ended
 const lastHit = PADS.map(() => -1);   // start time of last scheduled hit
 const flashQueue = [];
+const ownHits = [];                   // start times of our own hits, masked out of AUTO BPM
 
 function playVoice(i, t) {
   const buf = buffers[i];
@@ -149,6 +152,7 @@ function playVoice(i, t) {
   pending[i].push(v);
   lastHit[i] = t;
   flashQueue.push({ pad: i, time: t });
+  ownHits.push(t);
 }
 
 // Drop hits that were scheduled but have not started yet.
@@ -190,6 +194,11 @@ function gridNext(step, from) {
 function setBpm(bpm) {
   bpm = Math.round(clamp(bpm, BPM_MIN, BPM_MAX) * 10) / 10;
   if (bpm === state.bpm) return;
+  setBpmExact(bpm);
+}
+
+// Changes tempo keeping the current beat phase.
+function setBpmExact(bpm) {
   const now = heardNow();
   const pos = (now - anchor) / spb();
   state.bpm = bpm;
@@ -455,11 +464,12 @@ function repeatButton(el, fn) {
     t1 = setTimeout(() => { t2 = setInterval(fn, 60); }, 400);
   }, () => { clearTimeout(t1); clearInterval(t2); });
 }
-repeatButton($('bpmDown'), () => setBpm(state.bpm - 0.1));
-repeatButton($('bpmUp'), () => setBpm(state.bpm + 0.1));
+repeatButton($('bpmDown'), () => { stopAuto(); setBpm(state.bpm - 0.1); });
+repeatButton($('bpmUp'), () => { stopAuto(); setBpm(state.bpm + 0.1); });
 
 let taps = [];
 holdButton($('tap'), (e) => {
+  stopAuto();
   const t = heardAt(e.timeStamp);
   if (taps.length && t - taps[taps.length - 1] > 2) taps = [];
   taps.push(t);
@@ -482,10 +492,16 @@ holdButton($('tap'), (e) => {
 
 let nudgeDir = 0;
 function nudge(el, dir) {
-  holdButton(el, () => { anchor -= dir * NUDGE_STEP; nudgeDir = dir; }, () => { nudgeDir = 0; });
+  holdButton(el, () => { shiftPhase(-dir * NUDGE_STEP); nudgeDir = dir; }, () => { nudgeDir = 0; saveState(); });
 }
 nudge($('nudgeFwd'), 1);
 nudge($('nudgeBack'), -1);
+
+// With AUTO on, nudging also calibrates the detected phase (and is remembered).
+function shiftPhase(d) {
+  anchor += d;
+  if (auto.on) state.autoOffset = clamp(state.autoOffset + d, -0.3, 0.3);
+}
 
 function renderQuant() {
   const b = $('quant');
@@ -495,13 +511,244 @@ function renderQuant() {
 holdButton($('quant'), () => { state.quantize = !state.quantize; renderQuant(); saveState(); });
 renderQuant();
 
+// ---------- AUTO BPM ----------
+// Listens through the mic, builds an onset envelope of the kick band and fits a
+// beat grid to the last few seconds: tempo, and where the beats fall.
+const AUTO_WINDOW = 10;              // seconds of envelope analysed
+const AUTO_MIN_SECONDS = 4;          // before the first estimate
+const AUTO_BPM_MIN = 78, AUTO_BPM_MAX = 180;
+const AUTO_CONF = 2.5;               // grid peak, in std devs above the mean, needed to lock
+const AUTO_MIN_LEVEL = 1e-6;         // kick band below about -60 dBFS is treated as silence
+const INPUT_LATENCY = 0.015;         // guess for mic delay; NUDGE calibrates the rest
+const DETECT_DELAY = 0.0065;         // onset envelope peaks this long after the transient (measured)
+const OWN_MASK = 0.25;               // seconds after each of our hits ignored by the detector
+
+const auto = {
+  on: false, locked: false, stream: null, nodes: [],
+  hop: 0, size: 0, flux: null, count: 0, t0: 0, level: 0,
+  pendingBpm: null, phaseMiss: 0,
+};
+let workletReady = null;
+
+async function startAuto(testSource) {
+  if (auto.on) return;
+  setAutoText('…');
+  try {
+    if (!ctx.audioWorklet) throw new Error('AudioWorklet');
+    workletReady = workletReady || ctx.audioWorklet.addModule('onset-worklet.js');
+    await workletReady;
+    let src = testSource;
+    if (!src) {
+      try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch (e) { /* ignore */ }
+      auto.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        video: false,
+      });
+      auto.stream.getAudioTracks()[0].onended = () => stopAuto();
+      src = ctx.createMediaStreamSource(auto.stream);
+    }
+    const lp1 = ctx.createBiquadFilter();
+    const lp2 = ctx.createBiquadFilter();
+    lp1.type = lp2.type = 'lowpass';
+    lp1.frequency.value = lp2.frequency.value = 150;
+    const node = new AudioWorkletNode(ctx, 'onset', { numberOfOutputs: 1, outputChannelCount: [1] });
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    src.connect(lp1).connect(lp2).connect(node).connect(mute).connect(ctx.destination);
+    node.port.onmessage = (e) => onFlux(e.data);
+    Object.assign(auto, { on: true, locked: false, nodes: [src, lp1, lp2, node, mute], hop: 0, count: 0, level: 0, pendingBpm: null, phaseMiss: 0 });
+    if (ctx.state !== 'running') ctx.resume().catch(() => {});
+  } catch (err) {
+    stopAuto();
+    setAutoText('NO MIC');
+    setTimeout(renderAuto, 2000);
+    return;
+  }
+  renderAuto();
+}
+
+function stopAuto() {
+  if (!auto.on && !auto.stream) return;
+  auto.nodes.forEach((n) => { try { n.disconnect(); } catch (e) { /* ignore */ } });
+  if (auto.nodes[3]) auto.nodes[3].port.onmessage = null;
+  if (auto.stream) auto.stream.getTracks().forEach((t) => t.stop());
+  Object.assign(auto, { on: false, locked: false, stream: null, nodes: [], level: 0 });
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* ignore */ }
+  renderAuto();
+}
+
+function isOwnSound(t) {
+  for (let k = ownHits.length - 1; k >= 0; k--) {
+    const h = ownHits[k];
+    if (t >= h && t <= h + OWN_MASK) return true;
+  }
+  return false;
+}
+
+function onFlux(d) {
+  if (!auto.on) return;
+  if (!auto.hop) {
+    auto.hop = d.hop;
+    auto.size = Math.ceil(AUTO_WINDOW / d.hop);
+    auto.flux = new Float32Array(auto.size);
+    auto.t0 = d.t;
+    auto.count = 0;
+  }
+  while (ownHits.length && ownHits[0] < d.t - 2) ownHits.shift();
+  for (let k = 0; k < d.flux.length; k++) {
+    const t = d.t + k * d.hop;
+    auto.flux[auto.count % auto.size] = isOwnSound(t) ? 0 : d.flux[k];
+    auto.count++;
+  }
+  auto.level = auto.level * 0.8 + d.level * 0.2;
+}
+
+function analyzeAuto() {
+  if (!auto.on || !auto.hop || auto.count * auto.hop < AUTO_MIN_SECONDS) return;
+  const hop = auto.hop;
+  const n = Math.min(auto.count, auto.size);
+  const first = auto.count - n;
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = auto.flux[(first + Math.max(i - 1, 0)) % auto.size];
+    const b = auto.flux[(first + i) % auto.size];
+    const c = auto.flux[(first + Math.min(i + 1, n - 1)) % auto.size];
+    x[i] = 0.25 * a + 0.5 * b + 0.25 * c;
+  }
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += x[i];
+  mean /= n;
+  const y = x.map((v) => v - mean);
+
+  // Coarse tempo: autocorrelation over the beat lags, with a mild preference
+  // for the usual club range to settle half/double-time ambiguity.
+  const lagMin = Math.floor(60 / AUTO_BPM_MAX / hop);
+  const lagMax = Math.ceil(60 / AUTO_BPM_MIN / hop);
+  const acCache = new Map();
+  const ac = (lag) => {
+    if (lag >= n) return 0;
+    if (acCache.has(lag)) return acCache.get(lag);
+    let s = 0;
+    for (let i = lag; i < n; i++) s += y[i] * y[i - lag];
+    s /= n - lag;
+    acCache.set(lag, s);
+    return s;
+  };
+  let bestLag = 0, bestScore = -Infinity;
+  const scores = [];
+  for (let lag = lagMin; lag <= lagMax; lag++) {
+    const bpm = 60 / (lag * hop);
+    const prior = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 124) / 0.6, 2));
+    const s = (ac(lag) + 0.5 * ac(2 * lag) + 0.25 * ac(4 * lag)) * prior;
+    scores[lag] = s;
+    if (s > bestScore) { bestScore = s; bestLag = lag; }
+  }
+  if (!(bestScore > 0)) return markSearching();
+  const coarse = 60 / (bestLag * hop);
+
+  // Fine tempo and phase: slide a beat grid over the envelope.
+  const at = (pos) => {
+    const i = Math.floor(pos), f = pos - i;
+    return i + 1 < n ? x[i] * (1 - f) + x[i + 1] * f : x[i];
+  };
+  const fineSearch = (center) => {
+    let found = { score: -Infinity, bpm: center, phase: 0, phases: null };
+    for (let bpm = center * 0.97; bpm <= center * 1.03; bpm += 0.05) {
+      const period = 60 / bpm / hop;
+      const phases = [];
+      for (let ph = 0; ph < period; ph += 0.5) {
+        let s = 0, cnt = 0;
+        for (let pos = n - 1 - ph; pos >= 0; pos -= period) { s += at(pos); cnt++; }
+        phases.push(s / cnt);
+      }
+      let pi = 0;
+      for (let k = 1; k < phases.length; k++) if (phases[k] > phases[pi]) pi = k;
+      if (phases[pi] > found.score) found = { score: phases[pi], bpm, phase: pi * 0.5, phases };
+    }
+    return found;
+  };
+  let best = fineSearch(coarse);
+  // If every other beat of the double tempo is just as strong, the music is at double tempo
+  // (e.g. drum & bass read as 87 instead of 174).
+  if (coarse * 2 <= AUTO_BPM_MAX * 1.03) {
+    const dbl = fineSearch(coarse * 2);
+    if (dbl.score >= 0.8 * best.score) best = dbl;
+  }
+  const ph = best.phases;
+  const pm = ph.reduce((a, b) => a + b, 0) / ph.length;
+  const sd = Math.sqrt(ph.reduce((a, b) => a + (b - pm) * (b - pm), 0) / ph.length) || 1e-9;
+  const conf = (best.score - pm) / sd;
+  auto.lastEstimate = { bpm: best.bpm, conf };
+  if (conf < AUTO_CONF || auto.level < AUTO_MIN_LEVEL) return markSearching();
+
+  // Time of the last detected beat, moved from the input clock to the "heard" clock.
+  const beatInput = auto.t0 + (first + n - 1 - best.phase) * hop;
+  const outLat = (ctx.outputLatency || 0) + (ctx.baseLatency || 0);
+  const target = beatInput - outLat - INPUT_LATENCY - DETECT_DELAY + state.autoOffset;
+  const bpm = Math.round(best.bpm * 100) / 100;
+
+  if (!auto.locked) {
+    auto.locked = true;
+    setBpmExact(bpm);
+    anchor = target;
+    renderAuto();
+    return;
+  }
+  const diff = bpm - state.bpm;
+  if (Math.abs(diff) > 1.5) {
+    // A real tempo change has to show up twice in a row before we follow it.
+    if (auto.pendingBpm != null && Math.abs(auto.pendingBpm - bpm) < 0.5) {
+      setBpmExact(bpm);
+      anchor = target;
+      auto.pendingBpm = null;
+    } else {
+      auto.pendingBpm = bpm;
+    }
+    return;
+  }
+  auto.pendingBpm = null;
+  if (Math.abs(diff) >= 0.02) setBpmExact(state.bpm + 0.3 * diff);
+  const s = spb();
+  let err = (((target - anchor) % s) + s) % s;
+  if (err > s / 2) err -= s;
+  if (Math.abs(err) > 0.06) {
+    if (++auto.phaseMiss >= 2) { anchor += err; auto.phaseMiss = 0; }
+  } else {
+    anchor += 0.35 * err;
+    auto.phaseMiss = 0;
+  }
+}
+setInterval(analyzeAuto, 500);
+
+function markSearching() {
+  if (!auto.locked) return;
+  auto.locked = false;
+  renderAuto();
+}
+
+function setAutoText(t) { $('autoText').textContent = t; }
+function renderAuto() {
+  const b = $('auto');
+  b.classList.toggle('on', auto.on);
+  b.classList.toggle('searching', auto.on && !auto.locked);
+  b.classList.toggle('locked', auto.on && auto.locked);
+  setAutoText(auto.on ? (auto.locked ? 'LOCK' : 'AUTO') : 'AUTO');
+}
+function renderMeter() {
+  const db = auto.on ? 10 * Math.log10(auto.level + 1e-12) : -100;
+  $('meter').style.width = clamp((db + 70) / 60, 0, 1) * 100 + '%';
+}
+holdButton($('auto'), () => { if (auto.on) stopAuto(); else startAuto(); });
+renderAuto();
+
 // ---------- display loop ----------
 const beatEls = [...$('beats').children];
 let lastFrame = performance.now();
 function frame(now) {
   const dt = (now - lastFrame) / 1000;
   lastFrame = now;
-  if (nudgeDir) anchor -= nudgeDir * dt * NUDGE_RATE;
+  if (nudgeDir) shiftPhase(-nudgeDir * dt * NUDGE_RATE);
+  renderMeter();
 
   const h = heardNow();
   const pos = (h - anchor) / spb();
@@ -554,7 +801,7 @@ function silentLoop() {
 
 async function powerOn() {
   try {
-    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    if (navigator.audioSession) navigator.audioSession.type = auto.on ? 'play-and-record' : 'playback';
     else silentLoop();
   } catch (e) { silentLoop(); }
   try { await ctx.resume(); } catch (e) { /* retry on next tap */ }
@@ -572,10 +819,14 @@ function showPower(msg) {
   power.classList.remove('hidden');
 }
 
+// iOS may interrupt the context briefly (e.g. when the mic starts): try to resume first.
 ctx.onstatechange = () => {
-  if (ctx.state !== 'running' && document.visibilityState === 'visible' && buffers.length === PADS.length) {
-    showPower('Audio en pausa. Toca para reanudar.');
-  }
+  if (ctx.state === 'running' || document.visibilityState !== 'visible' || buffers.length !== PADS.length) return;
+  setTimeout(() => {
+    ctx.resume().catch(() => {}).finally(() => {
+      if (ctx.state !== 'running') showPower('Audio en pausa. Toca para reanudar.');
+    });
+  }, 200);
 };
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { releaseAll(); return; }

@@ -135,6 +135,14 @@ button {
 .btn.tap.beat { box-shadow: inset 0 0 0 2px var(--lcd), 0 0 14px rgba(255,154,46,.45), 0 2px 0 #0a0b0c; color: var(--lcd); }
 .btn.toggle.on { color: var(--glow); box-shadow: inset 0 0 0 2px var(--glow), 0 0 12px rgba(79,208,255,.35), 0 2px 0 #0a0b0c; }
 
+.btn.auto { display: flex; align-items: center; gap: 8px; }
+.btn.auto .led { width: 8px; height: 8px; border-radius: 50%; background: #2a2d31; }
+.btn.auto.searching .led { background: var(--lcd); animation: blink .6s steps(2) infinite; }
+.btn.auto.locked .led { background: var(--glow); box-shadow: 0 0 8px var(--glow); }
+@keyframes blink { 50% { opacity: .2; } }
+.meter { height: 4px; border-radius: 2px; background: #222428; overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #3a8f5c, #e6c14a 70%, #e0533a); }
+
 .lcd {
   position: relative;
   min-width: clamp(120px, 15vw, 180px);

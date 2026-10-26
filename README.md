@@ -10,6 +10,13 @@ Salida: minijack del iPad → cable minijack‑RCA → entrada LINE de un canal 
 - **TAP**: marca 4–8 golpes al ritmo del tema. Fija el BPM y la fase (el primer tiempo).
 - **− / +**: ajuste de ±0,1 BPM; si lo mantienes, se repite.
 - **NUDGE ◀ ▶**: un toque mueve la fase 5 ms; si lo mantienes, la va desplazando poco a poco (como el pitch bend de un CDJ).
+- **AUTO BPM**: la app escucha por el micrófono del iPad, detecta el BPM y dónde cae cada tiempo, y cuadra los rolls sola.
+  - LED ámbar parpadeando = escuchando. **LOCK** con LED azul = enganchada al tema. La barrita de abajo muestra lo que entra por el micro.
+  - Tarda unos 4–5 s en engancharse y unos 5 s en seguir un cambio de tempo.
+  - **Calibración (una vez por sala)**: con AUTO en LOCK, si el roll va un poco por delante o por detrás, corrígelo con NUDGE. La app recuerda ese ajuste para la próxima vez.
+  - TAP o −/+ apagan AUTO y vuelves al modo manual.
+  - Pon el iPad cerca de un monitor y usa un cable minijack‑RCA estéreo normal (TRS, 3 anillos). Con uno de 4 anillos el iPad dejaría de usar su micrófono.
+  - Safari pedirá permiso para el micrófono: acéptalo.
 - **QUANTIZE ON**: los rolls caen en la rejilla del BPM. Con OFF arrancan en el momento en que tocas.
 - **PITCH / DECAY**: arrastra arriba o abajo. Con doble toque vuelven al valor por defecto.
 - **VOLUME**: 0 dB a las 3 en punto, hasta +6 dB. Hay un limitador en la salida para que no sature.
