@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="X-PAD">
+<meta name="theme-color" content="#0b0c0d">
+<title>X-PAD</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="unit" id="unit">
+  <header class="brand">
+    <span class="logo">X-PAD</span>
+    <span class="rule"></span>
+    <span class="model">DRUM ROLL SAMPLER · RMX-1000 STYLE</span>
+  </header>
+
+  <section class="top">
+    <div class="block bpm-block">
+      <div class="label">BPM</div>
+      <div class="lcd"><span class="ghost">888.8</span><span class="val" id="bpm">128.0</span></div>
+      <div class="beats" id="beats"><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="block">
+      <div class="label">TEMPO</div>
+      <div class="row">
+        <button class="btn" id="bpmDown" aria-label="BPM -0.1">−</button>
+        <button class="btn tap" id="tap">TAP</button>
+        <button class="btn" id="bpmUp" aria-label="BPM +0.1">+</button>
+      </div>
+    </div>
+    <div class="block">
+      <div class="label">NUDGE</div>
+      <div class="row">
+        <button class="btn" id="nudgeBack" aria-label="Retrasar">◀</button>
+        <button class="btn" id="nudgeFwd" aria-label="Adelantar">▶</button>
+      </div>
+    </div>
+    <div class="block">
+      <div class="label">QUANTIZE</div>
+      <button class="btn toggle" id="quant">ON</button>
+    </div>
+    <div class="block grow"></div>
+    <div class="block">
+      <div class="knob" id="volume"></div>
+    </div>
+  </section>
+
+  <section class="channels" id="channels"></section>
+
+  <section class="strip-wrap">
+    <div class="label">ROLL · BEAT</div>
+    <div class="strip" id="strip"></div>
+  </section>
+
+  <section class="pads" id="pads"></section>
+</main>
+
+<div class="power" id="power">
+  <button class="power-btn" id="powerBtn"><span>ON</span></button>
+  <p id="powerMsg">Cargando sonidos…</p>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
