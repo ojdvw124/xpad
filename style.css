@@ -232,7 +232,7 @@ button {
 .strip-wrap { display: flex; flex-direction: column; gap: 6px; }
 .strip {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   height: clamp(54px, 9.5vh, 92px);
   border-radius: 10px;
   overflow: hidden;

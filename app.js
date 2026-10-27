@@ -11,7 +11,6 @@ const PADS = [
 const DIVS = [
   { label: '1/1',  beats: 1 },
   { label: '1/2',  beats: 1 / 2 },
-  { label: '1/3',  beats: 1 / 3 },
   { label: '1/4',  beats: 1 / 4 },
   { label: '1/8',  beats: 1 / 8 },
   { label: '1/16', beats: 1 / 16 },

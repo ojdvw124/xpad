@@ -1,5 +1,5 @@
 // Bump CACHE when any file changes so the iPad picks up the new version.
-const CACHE = 'xpad-v2';
+const CACHE = 'xpad-v3';
 const ASSETS = [
   './',
   'index.html',
